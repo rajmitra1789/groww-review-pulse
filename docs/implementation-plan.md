@@ -4,9 +4,8 @@ How to build the Groww Weekly Review Pulse, phase by phase. It follows [`archite
 
 Each phase ends in a working, checkable state. Do not start a phase until the hand checks of the previous one pass. Tasks are sized so each one fits in a single prompt.
 
-Two phases are **PROVISIONAL** and will be rewritten before they are built:
+One phase is **PROVISIONAL** and will be rewritten before it is built:
 
-- **Phase 3 (clustering)**, after the owner inspects a real `reviews.jsonl` from Phase 2.
 - **Phase 6 (MCP connection)**, after the tool names are read from the MCP server's GitHub README.
 
 ## Phase overview
@@ -16,7 +15,7 @@ Two phases are **PROVISIONAL** and will be rewritten before they are built:
 | 0 | Empty project setup | Ready | Folders, dependencies and config files. No logic |
 | 1 | Ingest | Ready | A dated raw snapshot of Groww reviews with no reviewer identity |
 | 2 | Normalize | Ready | `reviews.jsonl` plus drop counts per filter |
-| 3 | Clustering | **PROVISIONAL** | At most 5 themes with sizes and representatives |
+| 3 | Clustering | Ready | At most 5 themes with sizes and representatives |
 | 4 | Themes, quotes, actions | Ready | Named themes, 3 quote IDs, 3 action ideas |
 | 5 | Note, checks, preview UI | Ready | A validated note in a Streamlit preview with a Publish button |
 | 6 | MCP connection | **PROVISIONAL** | Publish writes the Google Doc and the Gmail draft |
@@ -147,46 +146,97 @@ Filter order:
 
 ---
 
-## Phase 3: Clustering — PROVISIONAL
+## Phase 3: Clustering
 
-> **PROVISIONAL.** This phase will be rewritten after the owner inspects `reviews.jsonl` from Phase 2. The steps below come from the current architecture and may change: the embedding model, the range of `k`, the clustering method, and how generic praise ("good app, easy to use") is handled.
+### What the real data showed
 
-What the inspection should look at:
+Measured on `data/snapshots/reviews_2026-10-21.jsonl` and the Phase 2 output for week ending 2026-10-18 (`data/runs/2026-10-18/reviews.jsonl`). The keyword counts come from simple word lists, so treat them as estimates.
 
-- How many reviews are kept, and whether that is enough for 3 to 5 stable themes.
-- The spread of review lengths after the 9-word minimum.
-- Whether generic praise dominates and would swallow a cluster.
-- Whether the reviews dropped as non-English take a topic with them (for example, Hinglish complaints about one feature).
+| Measure | Value |
+| --- | --- |
+| Snapshot | 13,625 reviews, 2026-07-22 to 2026-10-20. 77% five-star, 10% one-star. Median length 2 words |
+| Kept by Phase 2 | 1,950 (window removed 749, emoji-only 288, word count 10,558, language 80) |
+| Rating split of kept | 1★ 42%, 2★ 6%, 3★ 8%, 4★ 9%, 5★ 36%. The 9-word minimum keeps mostly complaints |
+| Word count of kept | median 20; 10th to 90th percentile 10 to 64; max 188. 481 reviews have 9 to 12 words; 92 have more than 80 |
+| Generic praise | About 260 (13%): praise words, no complaint words, no specific topic. 228 of them are 5★ |
+| Complaint topics | 1,035 reviews contain complaint words. 14 topics reach 2% of kept reviews, 7 reach 5%: app slow/crashes/glitches, customer support, F&O and options trading, app updates and UI changes, charges and brokerage, charts and indicators, order execution. 483 complaints touch 2 or more topics |
+| Hinglish (Roman-script Hindi) | About 201 (10%), 40 of them mostly Hindi. Romanised Punjabi and Telugu also appear. 105 of the 201 are 1★ |
+| Gibberish and other noise | About 7 keyboard-mash reviews, 1 Kannada-script review, plus a few off-topic ones (under 0.5%) |
+| Rating disagrees with text | 207 reviews rated 4–5★ contain complaint words (107 with no praise at all). 16 reviews rated 1–2★ contain only praise |
+
+Why Hinglish got through Phase 2: `lingua`'s Hindi model only recognises Devanagari script. On Latin-script text, English is the only candidate, and every Hinglish review scored English confidence 1.0. Raising `MIN_ENGLISH_CONFIDENCE` cannot catch them, so Phase 3 handles them.
+
+What the clustering trials showed (FastEmbed, KMeans, `random_state` 42):
+
+- **There is no natural number of clusters.** Silhouette scores were 0.047 to 0.054 for every `k` from 3 to 10. Choosing `k` by silhouette picks noise.
+- **Raw embeddings group by mood, not topic.** At `k` = 5, one cluster was 75% generic praise and another was 90% 1–2★ "worst app" reviews mixing withdrawals, support and bugs.
+- **Taking out generic praise and the positive/negative direction helps.** Agreement with keyword topics rose from 0.29 to 0.33 at `k` = 5, and no cluster was dominated by one mood (52% to 85% complaint share).
+- **Merging 12 small clusters into 5 by distance fails.** One merged group took about 65% of reviews. Merging with the LLM would move a Groq call into this phase, so it is not used.
+- **`jinaai/jina-embeddings-v2-small-en` was no better than `BAAI/bge-small-en-v1.5`** (0.34 to 0.39 against 0.35 to 0.39 for `k` from 8 to 15). Embedding about 1,500 reviews took about 50 seconds on a laptop with either model.
 
 ### Goal
 
-Group the reviews in `reviews.jsonl` into at most 5 themes, with the same result every time on the same input.
+Split `reviews.jsonl` into three groups, using only review text, never star ratings:
+
+1. **Noise**: Hinglish and other Roman-script Indian languages, gibberish, non-Latin script. Counted and reported. Never clustered, ranked, quoted or sent to the LLM.
+2. **Generic praise**: praise with no specific topic. Counted and reported as one line ("13% general praise"). Never clustered, ranked or quoted.
+3. **Clusterable**: everything else (about 1,490 reviews on this snapshot), grouped into exactly 5 themes. Fewer than 5 only if there are too few reviews.
+
+The two buckets are not themes and do not count toward the cap of 5. The result is the same every time on the same input.
 
 ### Files created or changed
 
 | File | Contents |
 | --- | --- |
-| `src/pulse/cluster.py` | Embed with FastEmbed, KMeans for `k` in 3 to 5, pick the best silhouette, compute representatives and theme stats |
-| `src/pulse/models.py` | Add `Cluster`: member IDs, centroid, size, share, average rating, share of 1-2 star reviews, representative IDs |
-| `src/pulse/config.py` | Add `EMBEDDING_MODEL`, `K_RANGE`, `RANDOM_STATE`, `REPS_PER_THEME` |
-| `scripts/cluster.py` | CLI: `reviews.jsonl` in, a readable cluster report out |
-| `tests/test_cluster.py` | Determinism and the 5-cluster cap |
+| `src/pulse/buckets.py` | Text-only rules: `is_hinglish`, `is_gibberish`, `is_non_latin`, `is_generic_praise`, and the word lists they use (Roman-Hindi function words, praise words, complaint words, topic words). `split_buckets(reviews)` returns noise, generic praise and clusterable, and records why each noise review was removed |
+| `src/pulse/cluster.py` | Embed, cache embeddings, remove the positive/negative direction, KMeans, cluster stats, representatives |
+| `src/pulse/models.py` | Add `Cluster`: member IDs, centroid, size, share of clusterable, share of kept, complaint share (from text), top topic words, representative IDs. Average rating and 1–2★ share are stored for display only. Add `Buckets`: counts per noise reason, generic praise count, and the topic words found in noise |
+| `src/pulse/config.py` | Add `EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"`, `N_CLUSTERS = 5`, `MIN_CLUSTERABLE = 250`, `RANDOM_STATE = 42`, `KMEANS_N_INIT = 10`, `REPS_PER_THEME = 12` |
+| `scripts/cluster.py` | CLI: `reviews.jsonl` in. Writes `buckets.json`, `clusters.json` and `embeddings.npy` to the run folder and prints a readable report |
+| `tests/test_buckets.py`, `tests/test_cluster.py` | See tasks |
+
+Rules in `buckets.py`, applied in this order. Each review gets the first rule it matches:
+
+| Rule | Bucket | Definition |
+| --- | --- | --- |
+| Non-Latin script | Noise | More than half the letters are outside the Latin alphabet (catches the Kannada review, and any other script Phase 2's detector does not know) |
+| Gibberish | Noise | At least 5 letter-tokens, and either 60% or more are 1–2 letters long, or a character repeats 5 or more times, with under 20% real English words of 3+ letters. Checked against an English word list shipped in the repo, not the operating system's |
+| Hinglish | Noise | At least 2 distinct strong Roman-Hindi words (`hai`, `nahi`, `nhi`, `kya`, `bahut`, `bekar`, `bakwas`, `chahiye`, …), or Hindi words making up at least 25% of the tokens. Weak words that are also English (`main`, `par`, `pe`, `ho`) count only toward the 25% rule |
+| Generic praise | Generic praise | Has a praise word, has no complaint word, and matches no topic word |
+| Everything else | Clusterable | |
+
+The noise report keeps the topic words found in Hinglish reviews (for example, brokerage complaints) so the team can see what this rule removes.
+
+Clustering, on the clusterable reviews only:
+
+1. **Embedding model: `BAAI/bge-small-en-v1.5`** through FastEmbed (384 dimensions, no prefix). Its 512-token window covers the longest kept review (188 words). It matched the Jina model on this data and is smaller. Embeddings are normalised and cached in `embeddings.npy`, keyed by review ID and model name, so re-runs skip the roughly 50-second embed.
+2. **Remove the positive/negative direction.** Compute the mean embedding of reviews with complaint words minus the mean of reviews with only praise words (text cues, never ratings). Project that direction out of every embedding and normalise again.
+3. **KMeans with `k` = 5**, `random_state` 42, `n_init` 10. `k` is fixed, not chosen by silhouette. If there are fewer than `MIN_CLUSTERABLE` (250) clusterable reviews, use `k` = 3. Print the silhouette score for information only.
+4. **Stats for each cluster:** size, share of clusterable and of kept, complaint share (from text), the top 3 topic words, and average rating and 1–2★ share for display only. Ratings never decide cluster membership, ranking, names or representatives.
+5. **Representatives:** the 12 reviews closest to the centroid. They come only from the clusterable group, so noise and generic praise can never be shown to the LLM in Phase 4 or quoted.
+
+Phase 4 ranks themes by size, with the complaint share from this phase breaking ties.
 
 ### Check by hand when done
 
-- [ ] Run `scripts/cluster.py` twice on the same `reviews.jsonl`. The chosen `k`, cluster sizes and representatives are the same both times.
-- [ ] There are never more than 5 clusters.
-- [ ] Read the 12 representatives of each cluster. You can say in a few words what each cluster is about.
-- [ ] Cluster sizes add up to the number of reviews in `reviews.jsonl`.
-- [ ] The silhouette score for each `k` is printed, so the choice of `k` can be explained.
+- [ ] Run `python scripts/cluster.py --run data/runs/2026-10-18` twice. Bucket counts, cluster sizes and representatives are identical both times. The second run reuses `embeddings.npy`.
+- [ ] Noise plus generic praise plus clusterable equals the 1,950 reviews in `reviews.jsonl`. Cluster sizes add up to clusterable.
+- [ ] On this snapshot: noise is about 200 to 215 (mostly Hinglish), generic praise about 250 to 265, clusterable about 1,480 to 1,500.
+- [ ] Read 20 reviews from each noise reason. At most 2 per 20 are plain English that should have been kept.
+- [ ] Read 20 generic-praise reviews. None names a specific feature, problem or request.
+- [ ] Exactly 5 clusters. None holds more than 35% of clusterable reviews. None is more than 60% praise-only reviews.
+- [ ] Read the 12 representatives of each cluster. You can name what it is about in a few words, and none of them is Hinglish or gibberish.
+- [ ] Find a 4–5★ review that complains (for example about charges). It sits in a complaint-topic cluster, not with praise.
 
 ### Tasks
 
-1. Write the embedding step with FastEmbed and `BAAI/bge-small-en-v1.5`. Cache the model between calls.
-2. Write the KMeans loop over `k` = 3, 4, 5 with a fixed `random_state`, keeping the best silhouette score.
-3. Compute stats for each cluster: size, share, average rating, share of 1-2 star reviews, and the 12 reviews closest to the centroid.
-4. Write `scripts/cluster.py` to print each cluster's stats and representatives.
-5. Write `tests/test_cluster.py` on a small fixed fixture: same seed, same result; never more than 5 clusters.
+1. Write `buckets.py` with the four rules and their word lists, and `split_buckets` returning the three groups plus the counts per reason.
+2. Write `tests/test_buckets.py`: Hinglish complaints, Romanised Punjabi, keyboard mash, a non-Latin-script review and repeated-letter spam go to noise; plain English that contains `main` or `par` is not Hinglish; "very easy to use, love it" is generic praise; "good app but brokerage is too high" is clusterable. Use invented examples, not real reviews.
+3. Write the embedding step in `cluster.py` with FastEmbed and `bge-small-en-v1.5`. Load the model once, and read or write the `embeddings.npy` cache.
+4. Write the step that removes the positive/negative direction, using text cues only.
+5. Write KMeans with `k` = 5 (3 below `MIN_CLUSTERABLE`), the cluster stats and the 12 representatives.
+6. Write `scripts/cluster.py` to write `buckets.json` and `clusters.json` and print the bucket counts, each cluster's stats and representatives, and the silhouette score.
+7. Write `tests/test_cluster.py` on a small fixed fixture: same input gives the same clusters; never more than 5; noise and generic praise never appear as members or representatives; changing only star ratings changes no cluster.
 
 ---
 
@@ -196,14 +246,23 @@ Group the reviews in `reviews.jsonl` into at most 5 themes, with the same result
 
 Use Groq to name each theme and draft the summary lines and 3 action ideas. Build a PII-clean quote pool and have the LLM pick 3 quotes **by ID only**. Code copies quote text from the data, so quotes stay verbatim.
 
+Themes are ranked by review count, with the complaint share from Phase 3 (measured from text) breaking ties, highest first. Star ratings never decide ranking or quote choice. Quote candidates are sent to the LLM as `{id, theme, text}`, without their rating. The rating is added next to the quote only when the note is assembled in Phase 5.
+
+A quote candidate is dropped if `find_pii` matches (email, phone number, PAN, UPI ID, digit run of 8 or more) or if `looks_like_name` says it appears to contain a person's name. The name check is a simple heuristic and errs on the side of dropping:
+
+- two or more consecutive capitalised words (such as `Rahul Sharma`) that are not at the start of a sentence, or
+- a name pattern at the very start of the review, such as one or two capitalised words followed by a comma, a colon or "here" (`Priya here, ...`, `Amit Kumar: ...`).
+
+Known product and brand words (`Groww`, `Google Play`, `Mutual Funds`, `F&O` and similar) are listed in `pii.py` and do not count as names. `looks_like_name` applies only to the quote pool, not to the final note, because theme names are capitalised.
+
 ### Files created or changed
 
 | File | Contents |
 | --- | --- |
 | `src/pulse/llm.py` | Groq client, JSON-only calls, one retry on invalid JSON, one wait-and-retry on a 429 using `retry-after` |
-| `src/pulse/themes.py` | One label call per cluster. Returns `{name, summary}` (name of at most 4 words, summary of at most 20). Ranks themes by review count, lowest average rating breaking ties |
-| `src/pulse/pii.py` | `find_pii(text)` for emails, Indian phone numbers, PAN, UPI IDs, digit runs of 8 or more, `@handles` and "my name is ..." |
-| `src/pulse/note.py` | Quote pool (top 3 themes, 9 to 40 words, PII-clean, 8 nearest the centroid ranked by `thumbs_up`) and the compose call returning `themes`, `quote_ids` and `actions` |
+| `src/pulse/themes.py` | One label call per cluster. Returns `{name, summary}` (name of at most 4 words, summary of at most 20). Ranks themes by review count, complaint share breaking ties |
+| `src/pulse/pii.py` | `find_pii(text)` for emails, Indian phone numbers, PAN, UPI IDs, digit runs of 8 or more, `@handles` and "my name is ...". `looks_like_name(text)` for the name heuristic, with its list of product and brand words |
+| `src/pulse/note.py` | Quote pool (top 3 themes, 9 to 40 words, PII-clean, no likely name, 8 nearest the centroid ranked by `thumbs_up`) and the compose call returning `themes`, `quote_ids` and `actions` |
 | `src/pulse/models.py` | Add `Theme` and `ComposeResult` |
 | `src/pulse/config.py` | Add `GROQ_MODEL`, `QUOTE_WORDS` |
 | `tests/test_pii.py`, `tests/test_quote_pool.py`, `tests/test_llm_json.py` | See tasks |
@@ -211,8 +270,10 @@ Use Groq to name each theme and draft the summary lines and 3 action ideas. Buil
 ### Check by hand when done
 
 - [ ] Each of the top 3 theme names matches what you saw in that cluster's representatives in Phase 3.
-- [ ] Every quote candidate shown is 9 to 40 words long and has no email, phone number, PAN, UPI ID or long number.
+- [ ] Every quote candidate shown is 9 to 40 words long and has no email, phone number, PAN, UPI ID, long number or person's name.
 - [ ] Every `quote_id` returned by the compose call is in the quote pool. An unknown ID is rejected, not guessed.
+- [ ] Read all 3 chosen quotes in full. None contains a person's name.
+- [ ] The quote pool sent to the compose call has no star ratings in it.
 - [ ] Each action names one of the top 3 themes and is something a product, growth or support team could do.
 - [ ] The summary lines and actions contain no numbers that were not in the input.
 - [ ] Groq calls in a run: at most 5 label calls and 1 compose call.
@@ -220,9 +281,9 @@ Use Groq to name each theme and draft the summary lines and 3 action ideas. Buil
 ### Tasks
 
 1. Write `llm.py`: a `call_json(system, user, schema_hint)` helper with low temperature, JSON-only output, one retry on invalid JSON, and one wait-and-retry on a 429.
-2. Write `themes.py`: the label prompt with only the cluster's representatives, the length limits for name and summary, and ranking by review count.
-3. Write `pii.py` with one pattern per PII type, and `tests/test_pii.py` with a positive and a negative example for each.
-4. Write the quote pool in `note.py`, and `tests/test_quote_pool.py`: a review with a phone number never enters the pool; a 41-word review never enters the pool.
+2. Write `themes.py`: the label prompt with only the cluster's representatives, the length limits for name and summary, and ranking by review count with complaint share breaking ties.
+3. Write `pii.py` with one pattern per PII type and `looks_like_name`, and `tests/test_pii.py` with a positive and a negative example for each. For names: `Rahul Sharma` mid-sentence and `Priya here, ...` at the start are caught; `Groww`, `Mutual Funds` and an ordinary capitalised first word of a sentence are not.
+4. Write the quote pool in `note.py`, and `tests/test_quote_pool.py`: a review with a phone number never enters the pool; a review with a likely name never enters the pool; a 41-word review never enters the pool; changing only star ratings changes neither the theme ranking nor the pool.
 5. Write the compose prompt and call. Validate the returned JSON shape: 3 theme lines, 3 distinct quote IDs from the pool, 3 actions with `theme_rank` 1, 2 or 3.
 6. Write `tests/test_llm_json.py` with a fake Groq response: valid JSON is parsed; invalid JSON triggers exactly one retry; an unknown quote ID is rejected.
 

@@ -28,14 +28,17 @@ flowchart TD
     subgraph pipeline [Pipeline - src/pulse]
         Load["load + normalise<br/>window: last 12 full weeks"]
         Filter["filters<br/>emoji-only, more than 8 words, English"]
-        Embed["FastEmbed ONNX embeddings"]
-        Cluster["KMeans, k = 3..5<br/>best silhouette"]
+        Buckets["text-only groups<br/>noise, generic praise, clusterable"]
+        Report["noise and generic-praise counts<br/>run report only"]
+        Embed["FastEmbed bge-small-en-v1.5<br/>clusterable only, mood removed"]
+        Cluster["KMeans, fixed k = 5<br/>k = 3 if under 250 clusterable"]
         Label["Groq: name each theme<br/>from representative reviews"]
-        Pool["quote pool<br/>9-40 words, PII-clean"]
+        Pool["quote pool<br/>9-40 words, PII-clean, no names"]
         Compose["Groq: summaries + actions<br/>+ quote IDs, JSON only"]
         Assemble["assemble note in code<br/>quotes copied from source"]
         Validate["validate<br/>250 words, 3/3/3, verbatim, PII"]
-        Load --> Filter --> Embed --> Cluster --> Label
+        Load --> Filter --> Buckets --> Embed --> Cluster --> Label
+        Buckets --> Report
         Filter --> Pool
         Label --> Compose
         Pool --> Compose
@@ -99,23 +102,38 @@ Dropped at fetch and never stored: `userName`, `userImage`, raw `reviewId`, `rep
 
 Emoji-only reviews would also fail rule 3. Rule 2 still runs first so the counts show why each review was dropped.
 
-Known effect of rule 4: Hinglish (Hindi written in Latin script, such as "app bahut slow hai") is common in Groww reviews. It usually scores low for English and gets dropped. That matches the brief's "remove non-English reviews". The run report shows how many were dropped so the team knows what is missing.
+Known limit of rule 4: Hinglish (Hindi written in Latin script, such as "app bahut slow hai") is common in Groww reviews, and this rule does not catch it. `lingua`'s Hindi model only recognises Devanagari script, so on Latin-script text English is the only candidate. On real data every Latin-script Hinglish review scored English confidence 1.0, so raising `MIN_ENGLISH_CONFIDENCE` cannot help. Hinglish is removed instead by the noise group before clustering (see **Clustering into themes**). That still matches the brief's "remove non-English reviews", and the run report shows how many were removed so the team knows what is missing.
 
 The filtered set is stored with the run. It has the same fields as the snapshot.
 
 ## Clustering into themes
 
-`src/pulse/cluster.py`. Clustering runs locally. Only small samples go to the LLM.
+`src/pulse/buckets.py` and `src/pulse/cluster.py`. Clustering runs locally. Only small samples go to the LLM. Every step uses review text only. Star ratings never decide group membership, cluster membership, theme names or ranking.
 
 Why not have the LLM cluster everything: a 12-week window can hold a few thousand qualifying reviews. That is hundreds of thousands of tokens, far above the Groq free plan (8,000 tokens per minute). Embedding locally costs nothing per run, and the result is the same every time.
 
-1. **Embed** each review's `text` with FastEmbed (ONNX, no PyTorch), model `BAAI/bge-small-en-v1.5`. Reviews are short, so its 512-token window is enough. Same runtime as the Nutrition RAG project, so the memory footprint is known to fit Streamlit Cloud.
-2. **Cluster** with scikit-learn `KMeans` for each `k` in 3, 4 and 5, fixed `random_state`. Keep the `k` with the best silhouette score. The cap of 5 is enforced here, so the LLM never sees more than 5 groups.
-3. **Representatives**: for each cluster, the `REPS_PER_THEME` (12) reviews closest to the centroid, plus summary numbers: size, share of the filtered total, average rating, share of 1-2 star reviews.
-4. **Label**: one Groq call per cluster with only its representatives. It returns JSON `{"name": "...", "summary": "..."}`. The name has at most 4 words and the summary at most 20. If two clusters get near-identical names, they are listed separately, not merged. Merging would change counts the LLM cannot see.
-5. **Rank** themes by review count (cluster size). Average rating breaks ties, lowest first. The top 3 go into the note. All themes (up to 5) appear in the run report.
+### Groups before clustering
 
-The fixed seed and a pinned embedding model make two runs on the same snapshot produce the same themes and counts. Only the LLM's wording changes between runs.
+`buckets.py` splits the filtered reviews into three groups with text rules (word lists shipped in the repo):
+
+| Group | What goes in | What happens to it |
+| --- | --- | --- |
+| Noise | Hinglish and other Roman-script Indian languages, gibberish (keyboard mash, repeated letters), and text mostly in a non-Latin script | Counted per reason in the run report, with the topic words found in it. Never clustered, ranked, quoted or sent to the LLM |
+| Generic praise | Has a praise word, no complaint word and no topic word | Counted and reported as one line, for example "13% general praise". Never clustered, ranked or quoted |
+| Clusterable | Everything else | Clustered into themes |
+
+Hinglish needs its own rule because `lingua`'s Hindi model only recognises Devanagari. Hinglish in Latin script scores as confident English and passes the English filter. Noise and generic praise are not themes and do not count toward the cap of 5.
+
+### Clustering the clusterable group
+
+1. **Embed** each review's `text` with FastEmbed (ONNX, no PyTorch), model `BAAI/bge-small-en-v1.5` (384 dimensions). Its 512-token window covers the longest kept review. Same runtime as the Nutrition RAG project, so the memory footprint is known to fit Streamlit Cloud. Embeddings are normalised and cached in `embeddings.npy`, keyed by review ID and model name.
+2. **Remove the positive/negative direction.** Raw embeddings group by mood, not topic. The direction is the mean embedding of reviews with complaint words minus the mean of reviews with only praise words (text cues, never ratings). It is projected out of every embedding, which is then normalised again.
+3. **Cluster** with scikit-learn `KMeans`, `k` fixed at 5 (`N_CLUSTERS`), `random_state` 42, `n_init` 10. If fewer than `MIN_CLUSTERABLE` (250) clusterable reviews remain, `k` is 3. `k` is not chosen by silhouette: on real data the score was flat (0.047 to 0.054) for every `k` from 3 to 10. The silhouette score is recorded for information only.
+4. **Representatives**: for each cluster, the `REPS_PER_THEME` (12) reviews closest to the centroid, taken only from the clusterable group. Summary numbers: size, share of clusterable and of filtered reviews, complaint share (from text) and the top 3 topic words. Average rating and the share of 1-2 star reviews are kept for display only.
+5. **Label**: one Groq call per cluster with only its representatives. It returns JSON `{"name": "...", "summary": "..."}`. The name has at most 4 words and the summary at most 20. If two clusters get near-identical names, they are listed separately, not merged. Merging would change counts the LLM cannot see.
+6. **Rank** themes by review count (cluster size). Complaint share breaks ties, highest first. The top 3 go into the note. All themes (up to 5) and the noise and generic-praise counts appear in the run report.
+
+The fixed seed, fixed `k` and a pinned embedding model make two runs on the same snapshot produce the same groups, themes and counts. Only the LLM's wording changes between runs.
 
 ## Writing the note
 
@@ -201,7 +219,14 @@ The brief bans reviewer identity from every artifact. There are two layers.
 - long digit runs (account, folio, demat, order or ticket numbers, 8 or more digits)
 - `@handles` and self-identification such as "my name is ..."
 
-A review that matches anything is never used as a quote (see **Decisions**). Because quotes must stay verbatim, a quote is never redacted: it is skipped. Such reviews still count toward theme sizes and may appear among the representatives sent to Groq. The same scan runs on the final note as the last check.
+Quote candidates also go through a name check, `looks_like_name(text)` in `pii.py`. It is a simple heuristic that errs on the side of dropping. A candidate is dropped if it has:
+
+- two or more consecutive capitalised words (such as `Rahul Sharma`) that are not at the start of a sentence, or
+- a name pattern at the very start of the review, such as one or two capitalised words followed by a comma, a colon or "here" (`Priya here, ...`, `Amit Kumar: ...`).
+
+Known product and brand words (`Groww`, `Google Play`, `Mutual Funds`, `F&O` and similar) are listed in `pii.py` and do not count as names. The name check applies only to the quote pool, not to the final note, because theme names are capitalised.
+
+A review that matches anything above is never used as a quote (see **Decisions**). Because quotes must stay verbatim, a quote is never redacted: it is skipped. Such reviews still count toward theme sizes and may appear among the representatives sent to Groq. The same scan runs on the final note as the last check.
 
 ## Delivery through MCP
 
@@ -303,7 +328,9 @@ Planned for `src/pulse/config.py`.
 | `MIN_WORDS` | `9` (that is, more than 8) |
 | `MIN_ENGLISH_CONFIDENCE` | `0.5` |
 | `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` |
-| `K_RANGE` | `3..5` |
+| `N_CLUSTERS` | `5` |
+| `MIN_CLUSTERABLE` | `250` (below this, `k` is 3) |
+| `KMEANS_N_INIT` | `10` |
 | `RANDOM_STATE` | `42` |
 | `REPS_PER_THEME` | `12` |
 | `QUOTE_WORDS` | `9..40` |

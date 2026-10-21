@@ -17,6 +17,9 @@ PLAY_LANG = "en"
 PLAY_COUNTRY = "in"
 WINDOW_WEEKS = 12
 TIMEZONE = "Asia/Kolkata"
+MIN_WORDS = 9
+MIN_ENGLISH_CONFIDENCE = 0.5
+RUNS_DIR = ROOT / "data" / "runs"
 
 SETTING_NAMES = (
     "GROQ_API_KEY",
