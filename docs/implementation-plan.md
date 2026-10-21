@@ -246,12 +246,13 @@ Phase 4 ranks themes by size, with the complaint share from this phase breaking 
 
 Use Groq to name each theme and draft the summary lines and 3 action ideas. Build a PII-clean quote pool and have the LLM pick 3 quotes **by ID only**. Code copies quote text from the data, so quotes stay verbatim.
 
-Themes are ranked by review count, with the complaint share from Phase 3 (measured from text) breaking ties, highest first. Star ratings never decide ranking or quote choice. Quote candidates are sent to the LLM as `{id, theme, text}`, without their rating. The rating is added next to the quote only when the note is assembled in Phase 5.
+Themes are ranked by review count, with the complaint share from Phase 3 (measured from text) breaking ties, highest first. When picking the top 3, any cluster whose complaint share is below `MIN_COMPLAINT_SHARE` is skipped, so a mostly-praise cluster cannot take a top slot. If fewer than 3 clusters pass, the remaining slots are filled from the skipped clusters by review count, largest first. Star ratings never decide ranking or quote choice. Quote candidates are sent to the LLM as `{id, theme, text}`, without their rating. The rating is added next to the quote only when the note is assembled in Phase 5.
 
 A quote candidate is dropped if `find_pii` matches (email, phone number, PAN, UPI ID, digit run of 8 or more) or if `looks_like_name` says it appears to contain a person's name. The name check is a simple heuristic and errs on the side of dropping:
 
 - two or more consecutive capitalised words (such as `Rahul Sharma`) that are not at the start of a sentence, or
-- a name pattern at the very start of the review, such as one or two capitalised words followed by a comma, a colon or "here" (`Priya here, ...`, `Amit Kumar: ...`).
+- a name pattern at the very start of the review, such as one or two capitalised words followed by a comma, a colon or "here" (`Priya here, ...`, `Amit Kumar: ...`), or
+- a name-like signature at the very end of the review, such as a capitalised word followed by one or two single-letter initials (`... Yogeshwara m p`), or a sign-off word followed by one or two capitalised words (`Thanks, Priya`, `Regards Amit Kumar`).
 
 Known product and brand words (`Groww`, `Google Play`, `Mutual Funds`, `F&O` and similar) are listed in `pii.py` and do not count as names. `looks_like_name` applies only to the quote pool, not to the final note, because theme names are capitalised.
 
@@ -260,15 +261,16 @@ Known product and brand words (`Groww`, `Google Play`, `Mutual Funds`, `F&O` and
 | File | Contents |
 | --- | --- |
 | `src/pulse/llm.py` | Groq client, JSON-only calls, one retry on invalid JSON, one wait-and-retry on a 429 using `retry-after` |
-| `src/pulse/themes.py` | One label call per cluster. Returns `{name, summary}` (name of at most 4 words, summary of at most 20). Ranks themes by review count, complaint share breaking ties |
-| `src/pulse/pii.py` | `find_pii(text)` for emails, Indian phone numbers, PAN, UPI IDs, digit runs of 8 or more, `@handles` and "my name is ...". `looks_like_name(text)` for the name heuristic, with its list of product and brand words |
+| `src/pulse/themes.py` | One label call per cluster. Returns `{name, summary}` (name of at most 4 words, summary of at most 20). Ranks themes by review count, complaint share breaking ties, skips clusters below `MIN_COMPLAINT_SHARE` for the top 3 and fills any empty slots by size |
+| `src/pulse/pii.py` | `find_pii(text)` for emails, Indian phone numbers, PAN, UPI IDs, digit runs of 8 or more, `@handles` and "my name is ...". `looks_like_name(text)` for the name heuristic (including end-of-review signatures and sign-offs), with its list of product and brand words and its list of sign-off words |
 | `src/pulse/note.py` | Quote pool (top 3 themes, 9 to 40 words, PII-clean, no likely name, 8 nearest the centroid ranked by `thumbs_up`) and the compose call returning `themes`, `quote_ids` and `actions` |
 | `src/pulse/models.py` | Add `Theme` and `ComposeResult` |
-| `src/pulse/config.py` | Add `GROQ_MODEL`, `QUOTE_WORDS` |
+| `src/pulse/config.py` | Add `GROQ_MODEL`, `QUOTE_WORDS`, `MIN_COMPLAINT_SHARE` (value set during the hand check below) |
 | `tests/test_pii.py`, `tests/test_quote_pool.py`, `tests/test_llm_json.py` | See tasks |
 
 ### Check by hand when done
 
+- [ ] Print the complaint share of each cluster. Set `MIN_COMPLAINT_SHARE` so the mostly-praise cluster falls below it and the complaint-topic clusters stay above it. Re-run and confirm the mostly-praise cluster is not in the top 3 (unless it was needed to fill a slot).
 - [ ] Each of the top 3 theme names matches what you saw in that cluster's representatives in Phase 3.
 - [ ] Every quote candidate shown is 9 to 40 words long and has no email, phone number, PAN, UPI ID, long number or person's name.
 - [ ] Every `quote_id` returned by the compose call is in the quote pool. An unknown ID is rejected, not guessed.
@@ -281,9 +283,9 @@ Known product and brand words (`Groww`, `Google Play`, `Mutual Funds`, `F&O` and
 ### Tasks
 
 1. Write `llm.py`: a `call_json(system, user, schema_hint)` helper with low temperature, JSON-only output, one retry on invalid JSON, and one wait-and-retry on a 429.
-2. Write `themes.py`: the label prompt with only the cluster's representatives, the length limits for name and summary, and ranking by review count with complaint share breaking ties.
-3. Write `pii.py` with one pattern per PII type and `looks_like_name`, and `tests/test_pii.py` with a positive and a negative example for each. For names: `Rahul Sharma` mid-sentence and `Priya here, ...` at the start are caught; `Groww`, `Mutual Funds` and an ordinary capitalised first word of a sentence are not.
-4. Write the quote pool in `note.py`, and `tests/test_quote_pool.py`: a review with a phone number never enters the pool; a review with a likely name never enters the pool; a 41-word review never enters the pool; changing only star ratings changes neither the theme ranking nor the pool.
+2. Write `themes.py`: the label prompt with only the cluster's representatives, the length limits for name and summary, and ranking by review count with complaint share breaking ties. When picking the top 3, skip clusters below `MIN_COMPLAINT_SHARE`; if fewer than 3 remain, fill the rest from the skipped clusters by size.
+3. Write `pii.py` with one pattern per PII type and `looks_like_name`, and `tests/test_pii.py` with a positive and a negative example for each. For names: `Rahul Sharma` mid-sentence, `Priya here, ...` at the start, a review ending in `... Yogeshwara m p` and a review ending in `Thanks, Priya` are caught; `Groww`, `Mutual Funds`, an ordinary capitalised first word of a sentence and a review ending in a plain `Thanks` are not.
+4. Write the quote pool in `note.py`, and `tests/test_quote_pool.py`: a review with a phone number never enters the pool; a review with a likely name never enters the pool; a review ending in a name-like signature never enters the pool; a 41-word review never enters the pool; changing only star ratings changes neither the theme ranking nor the pool; a large cluster below `MIN_COMPLAINT_SHARE` is left out of the top 3 when 3 other clusters pass, and is used to fill a slot when fewer than 3 pass.
 5. Write the compose prompt and call. Validate the returned JSON shape: 3 theme lines, 3 distinct quote IDs from the pool, 3 actions with `theme_rank` 1, 2 or 3.
 6. Write `tests/test_llm_json.py` with a fake Groq response: valid JSON is parsed; invalid JSON triggers exactly one retry; an unknown quote ID is rejected.
 

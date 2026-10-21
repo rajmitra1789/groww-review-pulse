@@ -77,6 +77,56 @@ class Review:
         )
 
 
+@dataclass(frozen=True)
+class Buckets:
+    kept_count: int
+    noise_count: int
+    noise_reason_counts: dict[str, int]
+    generic_praise_count: int
+    clusterable_count: int
+    noise_topic_words: dict[str, int]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kept_count": self.kept_count,
+            "noise_count": self.noise_count,
+            "noise_reason_counts": dict(self.noise_reason_counts),
+            "generic_praise_count": self.generic_praise_count,
+            "clusterable_count": self.clusterable_count,
+            "noise_topic_words": dict(self.noise_topic_words),
+        }
+
+
+@dataclass(frozen=True)
+class Cluster:
+    id: int
+    member_ids: tuple[str, ...]
+    centroid: tuple[float, ...]
+    size: int
+    share_of_clusterable: float
+    share_of_kept: float
+    complaint_share: float
+    top_topic_words: tuple[str, ...]
+    representative_ids: tuple[str, ...]
+    average_rating: float
+    one_two_star_share: float
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "member_ids": list(self.member_ids),
+            "centroid": [float(value) for value in self.centroid],
+            "size": self.size,
+            "share_of_clusterable": self.share_of_clusterable,
+            "share_of_kept": self.share_of_kept,
+            "complaint_share": self.complaint_share,
+            "top_topic_words": list(self.top_topic_words),
+            "representative_ids": list(self.representative_ids),
+            "average_rating": self.average_rating,
+            "one_two_star_share": self.one_two_star_share,
+        }
+
+
 def _hash_review_id(review_id: str) -> str:
     return hashlib.sha256(review_id.encode("utf-8")).hexdigest()[:12]
 
