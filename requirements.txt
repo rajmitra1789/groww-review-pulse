@@ -1,0 +1,8 @@
+streamlit==1.66.1
+groq==1.7.0
+fastembed==0.9.0
+scikit-learn==1.9.1
+lingua-language-detector==2.2.0
+emoji==2.16.0
+mcp==2.3.0
+python-dotenv==1.2.4
