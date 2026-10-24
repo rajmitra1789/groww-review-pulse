@@ -105,3 +105,28 @@ def test_missing_required_tool_stops_clearly(
             "google_docs_append_content", {}
         )
     assert caught.value.code == "MCP_REQUIRED_TOOL_MISSING"
+
+
+def test_parses_sdk_structured_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    class StructuredSession(FakeSession):
+        async def call_tool(
+            self, name: str, arguments: dict[str, object]
+        ) -> SimpleNamespace:
+            return SimpleNamespace(
+                structured_content={"ok": True, "charactersAppended": 12},
+                content=[],
+            )
+
+    monkeypatch.setattr(module.httpx2, "AsyncClient", FakeHttpClient)
+    monkeypatch.setattr(
+        module,
+        "streamable_http_client",
+        lambda url, *, http_client: AsyncContext(("read", "write")),
+    )
+    monkeypatch.setattr(module, "ClientSession", StructuredSession)
+
+    result = McpClient(
+        url="https://mcp.example.test", auth_token="token"
+    ).call_tool("google_docs_append_content", {})
+
+    assert result == {"ok": True, "charactersAppended": 12}

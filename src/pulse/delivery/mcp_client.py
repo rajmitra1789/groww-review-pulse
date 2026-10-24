@@ -81,7 +81,12 @@ class McpClient:
 
 
 def _parse_response(response: object) -> dict[str, Any]:
-    structured = getattr(response, "structuredContent", None)
+    # The SDK exposes the wire field ``structuredContent`` as the Python
+    # attribute ``structured_content``. Keep the alias fallback for simple
+    # test doubles and compatibility with older response wrappers.
+    structured = getattr(response, "structured_content", None)
+    if structured is None:
+        structured = getattr(response, "structuredContent", None)
     payload: object = structured
     if not isinstance(payload, dict):
         texts = [
