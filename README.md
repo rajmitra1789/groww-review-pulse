@@ -1,26 +1,47 @@
 # Groww Review Pulse
 
-Groww Review Pulse turns a committed snapshot of public Google Play reviews into
-a checked weekly brief. It filters and clusters reviews, uses Groq to name
-themes and draft actions, preserves quotes verbatim, and can append an approved
-brief to Google Docs and create a Gmail draft through a separate MCP server.
+Groww Review Pulse reads Groww Play Store reviews and writes a one-page weekly note with the top 3 themes, 3 verbatim user quotes, and 3 action ideas. It then sends the note to a Google Doc and a Gmail draft through an MCP server.
 
-The Streamlit deployment does not fetch Play Store data. It reads a committed,
-identity-stripped snapshot from `data/snapshots/` or a snapshot uploaded in the
-UI.
+## Live links
 
-## Local setup
+- [Live app](https://groww-review-puls-mny9sziydzh2kndreerqfh.streamlit.app/)
+- [MCP server](https://mcp-server-pulse-production.up.railway.app), with a health check at [`/health`](https://mcp-server-pulse-production.up.railway.app/health)
+- [MCP server code](https://github.com/rajmitra1789/mcp-server-pulse)
+
+## Features
+
+- Reads a saved snapshot of public Groww Play Store reviews.
+- Normalizes review text and removes reviewer identity fields.
+- Groups similar reviews into themes using embeddings and clustering.
+- Uses Groq to name themes and suggest practical actions.
+- Preserves selected user quotes verbatim.
+- Validates the note before it can be published.
+- Appends the weekly note to a Google Doc and creates a Gmail draft through an authenticated MCP server.
+- Provides a Streamlit interface for previewing and publishing the pulse.
+
+## How it works
+
+1. **Ingest:** Load a committed review snapshot or an uploaded snapshot.
+2. **Normalize:** Clean and standardize review text while excluding reviewer identity data.
+3. **Cluster:** Embed reviews and group similar feedback with KMeans.
+4. **Name themes and pick quotes:** Name the strongest themes, select verbatim quotes, and draft action ideas.
+5. **Validate:** Check the generated note, its structure, and its quotes before publishing.
+6. **Publish through MCP:** Send the approved note to the MCP server, which appends it to Google Docs and creates a Gmail draft.
+
+## Usage
+
+### Run locally
 
 Python 3.12 is required.
 
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements-dev.txt
-cp .env.example .env
+python -m pip install -r requirements.txt
+streamlit run app.py
 ```
 
-Set the five local values in `.env`:
+Configure these five secrets in your environment, local `.env` file, or Streamlit secrets:
 
 - `GROQ_API_KEY`
 - `MCP_SERVER_URL`
@@ -28,41 +49,28 @@ Set the five local values in `.env`:
 - `PULSE_DOC_ID`
 - `PULSE_RECIPIENT`
 
-Run the tests and app:
+### Use the live app
 
-```bash
-pytest -q
-streamlit run app.py
-```
+1. Open the [live app](https://groww-review-puls-mny9sziydzh2kndreerqfh.streamlit.app/).
+2. Click **Generate preview** and review the weekly note.
+3. Click **Publish** to append the note to the configured Google Doc and create the Gmail draft.
 
-The app reads each setting from the environment first and then from Streamlit
-secrets.
+## Tech stack
 
-## Refresh the snapshot
+- Python 3.12
+- Streamlit Community Cloud
+- FastEmbed with `bge-small-en-v1.5`
+- scikit-learn KMeans
+- Groq
+- Official MCP Python SDK
+- MCP server built with Node.js and deployed on Railway
 
-Fetching is a local-only task because `google-play-scraper` is intentionally a
-development dependency:
+## Known limits
 
-```bash
-python scripts/fetch_reviews.py
-```
-
-The script writes `data/snapshots/reviews_YYYY-MM-DD.jsonl` after removing
-reviewer identity fields. Review that file, then add it to git so Community
-Cloud can read it. Generated run artifacts under `data/runs/` are temporary and
-are intentionally ignored.
-
-## Streamlit Community Cloud
-
-Deploy `app.py` from the repository with Python 3.12 and copy the five settings
-above into the app's Secrets editor. Do not upload `.env` or
-`.streamlit/secrets.toml`.
-
-The app is intended to be public and has no password gate. Consequently, every
-visitor can generate previews and can use the Publish button after validation;
-Publish writes to the configured Google Doc and creates a draft for the
-configured recipient. Use a dedicated document and recipient, monitor the MCP
-service, and remove or rotate its bearer token before taking the app offline.
-
-The complete deployment, verification, and rollback procedure is in
-[`docs/deployment-plan.md`](docs/deployment-plan.md).
+- The Google login for the MCP server expires every 7 days while the Google OAuth app is in Testing mode. Re-run the sign-in and replace the token in Railway.
+- Anyone with the app URL can click Publish and write to the Doc.
+- About 200 reviews, mostly Hinglish, are held out of the pulse in a noise group.
+- Themes are ranked with a keyword-based complaint score, and the cutoff of 0.60 was set by hand. A theme with few reviews can rank first.
+- A chosen quote can be praise instead of a problem.
+- Republishing the same week can add the note to the Doc twice.
+- There is no scheduler. The pulse is run by hand each week.
