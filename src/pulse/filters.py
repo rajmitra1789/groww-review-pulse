@@ -55,6 +55,17 @@ class Funnel:
             "reviews_kept": self.reviews_kept,
         }
 
+    @classmethod
+    def from_dict(cls, row: dict) -> Funnel:
+        return cls(
+            reviews_in=int(row["reviews_in"]),
+            removed_by_window=int(row["removed_by_window"]),
+            removed_by_emoji_only=int(row["removed_by_emoji_only"]),
+            removed_by_word_count=int(row["removed_by_word_count"]),
+            removed_by_language=int(row["removed_by_language"]),
+            reviews_kept=int(row["reviews_kept"]),
+        )
+
 
 def last_full_sunday(today: date | None = None) -> date:
     """Most recent Sunday on or before `today` in IST (the last full week end)."""

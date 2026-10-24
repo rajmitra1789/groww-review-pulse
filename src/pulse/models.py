@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from datetime import date, datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from pulse.config import TIMEZONE
@@ -126,6 +127,22 @@ class Cluster:
             "one_two_star_share": self.one_two_star_share,
         }
 
+    @classmethod
+    def from_dict(cls, row: dict) -> Cluster:
+        return cls(
+            id=int(row["id"]),
+            member_ids=tuple(row["member_ids"]),
+            centroid=tuple(float(value) for value in row["centroid"]),
+            size=int(row["size"]),
+            share_of_clusterable=float(row["share_of_clusterable"]),
+            share_of_kept=float(row["share_of_kept"]),
+            complaint_share=float(row["complaint_share"]),
+            top_topic_words=tuple(row.get("top_topic_words") or ()),
+            representative_ids=tuple(row["representative_ids"]),
+            average_rating=float(row["average_rating"]),
+            one_two_star_share=float(row["one_two_star_share"]),
+        )
+
 
 @dataclass(frozen=True)
 class Theme:
@@ -205,6 +222,52 @@ class ComposeResult:
                 {"theme_rank": item.theme_rank, "text": item.text} for item in self.actions
             ],
         }
+
+
+@dataclass(frozen=True)
+class Failure:
+    check: str
+    detail: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"check": self.check, "detail": self.detail}
+
+
+@dataclass(frozen=True)
+class CheckResult:
+    check: str
+    passed: bool
+    detail: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {"check": self.check, "passed": self.passed, "detail": self.detail}
+
+
+@dataclass(frozen=True)
+class PulseResult:
+    week_ending: date
+    window_weeks: int
+    window_start: date
+    note: str
+    word_count: int
+    failures: tuple[Failure, ...]
+    checks: tuple[CheckResult, ...]
+    funnel: object
+    buckets: Buckets | None
+    themes: tuple[Theme, ...]
+    top_themes: tuple[Theme, ...]
+    compose: ComposeResult | None
+    reviews: tuple[Review, ...]
+    run_dir: Path
+    zip_path: Path | None
+    k: int
+    silhouette: float | None
+    allowed_numbers: tuple[str, ...] = ()
+    stop_reason: str = ""
+
+    @property
+    def passed(self) -> bool:
+        return not self.failures and not self.stop_reason
 
 
 def _hash_review_id(review_id: str) -> str:

@@ -48,7 +48,7 @@ flowchart TD
     subgraph deliver [Deliver - remote MCP over HTTPS]
         MCP["MCP server on Railway<br/>MCP_SERVER_URL<br/>holds Google OAuth"]
         Doc["Google Doc<br/>PULSE_DOC_ID"]
-        Mail["Email to PULSE_RECIPIENT<br/>draft or send: decided later"]
+        Mail["Gmail draft to PULSE_RECIPIENT<br/>draft only, never send"]
         MCP --> Doc
         MCP --> Mail
     end
@@ -234,25 +234,56 @@ A review that matches anything above is never used as a quote (see **Decisions**
 
 ### Server
 
-The MCP server is a separate project, built and deployed on Railway by the owner. It is not part of this repository and is not installed or started by this app. It has its own public HTTPS URL, stored in `MCP_SERVER_URL`.
+The MCP server is a separate project, built and deployed on Railway by the owner. It is not part of this repository and is not installed or started by this app.
 
-The server holds the Google OAuth login and makes all Google Docs and email calls. This agent holds no Google credentials, OAuth client, refresh token or Google account setting.
+| Item | Value |
+| --- | --- |
+| Deployed URL | `https://mcp-server-pulse-production.up.railway.app`, stored in `MCP_SERVER_URL` |
+| Code | [github.com/rajmitra1789/mcp-server-pulse](https://github.com/rajmitra1789/mcp-server-pulse) |
+| Transport | Streamable HTTP. The server answers MCP requests at its base URL, so the client connects to `MCP_SERVER_URL` itself, with no path added. The server's only other routes are `GET /health`, `GET /`, `/oauth/start` and `/oauth/callback` |
+| Auth | Every request carries `Authorization: Bearer <MCP_AUTH_TOKEN>`. Without it the server answers `401` |
+
+The server holds the Google OAuth login and makes all Google Docs and Gmail calls. This agent holds no Google credentials, OAuth client, refresh token or Google account setting. `MCP_AUTH_TOKEN` only lets the agent talk to the MCP server; it is not a Google credential.
+
+### Tools
+
+Read from the server's README. Only two tools are used.
+
+| Tool | Arguments this project sends | Success response |
+| --- | --- | --- |
+| `google_docs_append_content` | `documentId`: `PULSE_DOC_ID`; `content`: the final note; `ensureLeadingNewline`: `true` | `ok: true`, `documentId`, `charactersAppended`, `status: "appended"` |
+| `gmail_create_draft` | `to`: `[PULSE_RECIPIENT]`; `subject`: the first line of the note; `body`: the note, a blank line, then the Doc link; `bodyType`: `"text"` | `ok: true`, `draftId`, `threadId` if available, `status: "draft_created"` |
+
+The append tool adds text to the end of the Doc. It never replaces what is already there.
+
+The server also has `gmail_send_email`. This project never calls it. The output is a draft only, and auto-sending is out of scope.
+
+Every failure comes back in one shape: `ok: false`, `action` (the tool name) and `error` with `code`, `message` and `retryable`. Codes include `DOC_NOT_FOUND`, `DOC_PERMISSION_DENIED`, `DOC_APPEND_FAILED`, `GMAIL_DRAFT_CREATE_FAILED`, `GOOGLE_AUTH_REQUIRED`, `GOOGLE_RATE_LIMITED` and `PAYLOAD_TOO_LARGE`. The UI shows the code and the message as they are.
+
+The Doc link is built in code: `https://docs.google.com/document/d/{PULSE_DOC_ID}/edit`.
 
 ### Client
 
-`src/pulse/delivery/mcp_client.py` uses the official `mcp` Python SDK to open a remote session to `MCP_SERVER_URL` over HTTPS. The app calls tools directly and deterministically. The LLM is never given the tools, so it cannot create, edit or send anything on its own.
+`src/pulse/delivery/mcp_client.py` uses the official `mcp` Python SDK as an MCP client over streamable HTTP. It opens a session to `MCP_SERVER_URL` itself, with no path added, sends `Authorization: Bearer <MCP_AUTH_TOKEN>` on every request, lists the server's tools, and stops with a clear message if `google_docs_append_content` or `gmail_create_draft` is missing.
 
-Tool names, arguments and response shapes are not fixed in this document. They are read from the MCP server's GitHub README in the phase that connects the agent to the server, and recorded there.
+The app calls tools directly and deterministically. The LLM is never given the tools, so it cannot create, edit or send anything on its own. `publish.py` takes the client as an argument, so tests pass in a fake client instead.
 
 ### Publish
 
-`publish(result)`:
+Publishing happens only when the owner clicks **Publish**, and the button works only after every validation check has passed. Nothing publishes automatically: not on preview, not on page load, not on retry of the compose call.
 
-1. Write the final note to the Google Doc identified by `PULSE_DOC_ID`, through the MCP server.
-2. Send the note and the Doc link through the MCP server to the address in `PULSE_RECIPIENT`. Whether this creates a draft or sends the email is decided in the connect phase, from what the MCP server supports.
-3. Return the Doc link and the email confirmation to the UI.
+`publish(result, client)` makes two calls, in this order:
 
-If step 1 succeeds and step 2 fails, the UI shows the Doc link and a "Retry email" button. That reruns step 2 only.
+1. `google_docs_append_content`: append the final note to the end of the Doc at `PULSE_DOC_ID`.
+2. `gmail_create_draft`: create a draft to `PULSE_RECIPIENT` containing the note and the Doc link. Draft only. No send.
+
+It returns the Doc link, `charactersAppended` and `draftId` to the UI and writes them to `publish.json` in the run folder.
+
+If step 1 fails, step 2 is not attempted and the UI shows the error.
+
+If step 1 succeeds and step 2 fails, the UI shows the Doc link, the draft error and a **Retry draft** button. Retry draft reruns step 2 only. It never appends to the Doc again.
+
+Appending is not idempotent: a second append adds the note a second time. So once `publish.json` records a successful append for a week, the Publish button for that week is replaced by the Doc link, and only Retry draft is offered if the draft is still missing.
 
 ## Streamlit app
 
@@ -337,7 +368,7 @@ Planned for `src/pulse/config.py`.
 | `MAX_NOTE_WORDS` | `250` |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` |
 
-Secrets, and the only secrets: `GROQ_API_KEY`, `MCP_SERVER_URL`, `PULSE_DOC_ID` (the Google Doc ID) and `PULSE_RECIPIENT` (the email address). Read from the environment first, then `st.secrets`, as in the Nutrition RAG project.
+Secrets, and the only five secrets: `GROQ_API_KEY`, `MCP_SERVER_URL` (the bare Railway URL), `MCP_AUTH_TOKEN` (the bearer token for the MCP server, not a Google credential), `PULSE_DOC_ID` (the Google Doc ID) and `PULSE_RECIPIENT` (the email address). Read from the environment first, then `st.secrets`, as in the Nutrition RAG project.
 
 ## LLM budget
 
@@ -354,7 +385,7 @@ Each run makes at most 5 theme-label calls and 1 to 2 compose calls. Each call i
 | Validation fails twice | Stop, show the failed checks. Nothing goes to the MCP server |
 | MCP server unreachable at `MCP_SERVER_URL` | Publish fails with the connection error shown. Preview still works |
 | MCP server reports a Google error | Show the server's error message. Preview still works |
-| Doc written, email failed | Show the Doc link and offer "Retry email" |
+| Doc written, draft failed | Show the Doc link and the draft error, and offer "Retry draft". It reruns the draft step only and never appends again |
 
 ## Testing approach
 
@@ -362,8 +393,9 @@ Each run makes at most 5 theme-label calls and 1 to 2 compose calls. Each call i
 - **PII**: positive and negative cases for each pattern. A matching review never enters the quote pool.
 - **Note**: the assembler with a fixed fake LLM response. Verbatim, length, structure and number checks each have a failing case.
 - **Clustering**: on a small fixed fixture, the same seed gives the same clusters, and `k` never exceeds 5.
-- **Delivery**: `publish()` against a fake MCP session that records tool calls. It asserts the Doc write targets `PULSE_DOC_ID`, the email goes only to `PULSE_RECIPIENT`, and the Doc write happens before the email. Tool-specific assertions are added in the connect phase.
-- **No Google SDK**: a test fails if `googleapiclient` or `google.oauth2` is imported anywhere under `src/`.
+- **MCP client**: the SDK's streamable HTTP connection is replaced by a stub that records its arguments. It asserts the URL is exactly `MCP_SERVER_URL` with no path added, the headers hold `Authorization: Bearer <MCP_AUTH_TOKEN>`, and a missing required tool stops with a clear message. No network.
+- **Delivery**: `publish()` and `retry_draft()` against a fake MCP client that records every call and returns set envelopes. It asserts the append targets `PULSE_DOC_ID` with `ensureLeadingNewline: true`; the draft goes only to `[PULSE_RECIPIENT]` with `bodyType: "text"` and contains the note and the Doc link; the append comes before the draft; a failed append means no draft call; a failed draft leaves the append result in place; `retry_draft()` makes exactly one draft call and no append call; `publish()` refuses when a check failed; `gmail_send_email` is never called. No test calls the real server or sends anything.
+- **No Google SDK**: a test fails if `googleapiclient` or `google.oauth2` is imported anywhere under `src/`, or if the string `gmail_send_email` appears there.
 
 ## Decisions
 

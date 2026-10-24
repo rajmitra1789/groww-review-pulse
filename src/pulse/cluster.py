@@ -142,6 +142,18 @@ def embed_reviews(
     return _l2_normalize(vectors), cache_hit
 
 
+def polarity_vectors_by_id(
+    reviews: list[Review],
+    cache_path: Path | None = None,
+    embed_fn: EmbedFn | None = None,
+    model_name: str = EMBEDDING_MODEL,
+) -> dict[str, np.ndarray]:
+    """Embeddings in the same space as cluster centroids (mood direction removed)."""
+    vectors, _ = embed_reviews(reviews, cache_path, embed_fn, model_name)
+    vectors = remove_polarity_direction(vectors, reviews)
+    return {review.id: vectors[index] for index, review in enumerate(reviews)}
+
+
 def remove_polarity_direction(vectors: np.ndarray, reviews: list[Review]) -> np.ndarray:
     complaint_indexes = [
         index for index, review in enumerate(reviews) if has_complaint_word(review.text)

@@ -27,6 +27,8 @@ KMEANS_N_INIT = 10
 REPS_PER_THEME = 12
 GROQ_MODEL = "openai/gpt-oss-120b"
 QUOTE_WORDS = (9, 40)
+MAX_NOTE_WORDS = 250
+MIN_REVIEWS_FOR_PULSE = 30
 # Hand check on week ending 2026-10-18. Complaint shares were
 # 0.77, 0.58, 0.53, 0.48 and 0.47. 0.60 keeps the support cluster
 # eligible; any empty top slots fill from the rest by review count.

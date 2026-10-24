@@ -4,10 +4,6 @@ How to build the Groww Weekly Review Pulse, phase by phase. It follows [`archite
 
 Each phase ends in a working, checkable state. Do not start a phase until the hand checks of the previous one pass. Tasks are sized so each one fits in a single prompt.
 
-One phase is **PROVISIONAL** and will be rewritten before it is built:
-
-- **Phase 6 (MCP connection)**, after the tool names are read from the MCP server's GitHub README.
-
 ## Phase overview
 
 | Phase | Name | Status | Ends with |
@@ -18,7 +14,7 @@ One phase is **PROVISIONAL** and will be rewritten before it is built:
 | 3 | Clustering | Ready | At most 5 themes with sizes and representatives |
 | 4 | Themes, quotes, actions | Ready | Named themes, 3 quote IDs, 3 action ideas |
 | 5 | Note, checks, preview UI | Ready | A validated note in a Streamlit preview with a Publish button |
-| 6 | MCP connection | **PROVISIONAL** | Publish writes the Google Doc and the Gmail draft |
+| 6 | MCP connection | Ready | Publish appends to the Google Doc and creates the Gmail draft |
 | 7 | Deployment | Ready | A private app on Streamlit Community Cloud |
 
 ---
@@ -38,16 +34,16 @@ Create the folder structure, dependency files and config templates from the arch
 | `requirements.txt` | Runtime packages only: `streamlit`, `groq`, `fastembed`, `scikit-learn`, `lingua-language-detector`, `emoji`, `mcp`, `python-dotenv`. Exact `==` pins |
 | `requirements-dev.txt` | `-r requirements.txt` plus `pytest` and `google-play-scraper`. The scraper runs only on a laptop, so it stays out of the cloud build |
 | `runtime.txt` | `python-3.12`. `lingua-language-detector` needs Python 3.12 or later. Records the version to pick in Streamlit's Advanced settings |
-| `.env.example` | The four settings from the architecture: `GROQ_API_KEY`, `MCP_SERVER_URL`, `PULSE_DOC_ID`, `PULSE_RECIPIENT`. Placeholder values only |
+| `.env.example` | The five settings from the architecture: `GROQ_API_KEY`, `MCP_SERVER_URL`, `MCP_AUTH_TOKEN`, `PULSE_DOC_ID`, `PULSE_RECIPIENT`. Placeholder values only |
 | `.streamlit/config.toml` | `server.headless = true`, theme |
-| `.streamlit/secrets.toml.example` | Same four keys as `.env.example` |
+| `.streamlit/secrets.toml.example` | Same five keys as `.env.example` |
 | `.gitignore` | `.env`, `.streamlit/secrets.toml`, `.venv/`, `__pycache__/`, `.pytest_cache/`, `data/runs/` |
 
 ### Check by hand when done
 
 - [ ] `python3.12 -m venv .venv && pip install -r requirements-dev.txt` finishes with no errors.
 - [ ] `python -c "import streamlit, groq, fastembed, sklearn, lingua, emoji, mcp, google_play_scraper"` prints nothing.
-- [ ] `.env.example` lists exactly four keys and contains no real value.
+- [ ] `.env.example` lists exactly five keys and contains no real value.
 - [ ] No `.py` file contains anything except an empty `__init__.py`.
 - [ ] `data/runs/` and `.env` are ignored by git; `data/snapshots/` is not.
 
@@ -70,7 +66,7 @@ Download recent public Play Store reviews for `com.nextbillion.groww` into a dat
 
 | File | Contents |
 | --- | --- |
-| `src/pulse/config.py` | `APP_ID`, `PLAY_LANG`, `PLAY_COUNTRY`, `WINDOW_WEEKS`, `TIMEZONE`, and the env-then-`st.secrets` lookup for the four settings |
+| `src/pulse/config.py` | `APP_ID`, `PLAY_LANG`, `PLAY_COUNTRY`, `WINDOW_WEEKS`, `TIMEZONE`, and the env-then-`st.secrets` lookup for the five settings: `GROQ_API_KEY`, `MCP_SERVER_URL`, `MCP_AUTH_TOKEN`, `PULSE_DOC_ID`, `PULSE_RECIPIENT` |
 | `src/pulse/models.py` | `Review` dataclass with the snapshot schema: `id`, `rating`, `title`, `text`, `date`, `app_version`, `thumbs_up` |
 | `scripts/fetch_reviews.py` | Fetch with `google-play-scraper`, map fields, write the raw file |
 | `src/pulse/snapshot.py` | Load and validate a snapshot (JSONL or CSV). Rejects bad rows with the line number |
@@ -345,50 +341,74 @@ Validation checks, all required:
 
 ---
 
-## Phase 6: Connect to the MCP server — PROVISIONAL
-
-> **PROVISIONAL.** This phase will be rewritten after the MCP server's GitHub README is read. Tool names, arguments, response shapes, the transport and any auth header are **not** filled in here and must not be guessed. They are recorded in this section and in the architecture's **Delivery through MCP** section before any task is built.
-
-What must be read from the README before rewriting:
-
-- The tool that writes to an existing Google Doc by ID, and whether it replaces or appends.
-- The tool that creates a Gmail draft, its recipient, subject and body arguments, and its response.
-- Whether the server also has a send tool. The brief says the output is a **draft** and auto-sending is out of scope, so only a draft tool may be used. If the server can only send, stop and raise it with the owner.
-- The transport (for example streamable HTTP) and whether the server expects an auth header.
-- How the server returns errors, including Google errors.
+## Phase 6: Connect to the MCP server
 
 ### Goal
 
-Make the Publish button write the validated note to the Google Doc at `PULSE_DOC_ID` and create a Gmail draft to `PULSE_RECIPIENT` containing the note and the Doc link. All calls go through the MCP server at `MCP_SERVER_URL`. The agent holds no Google credentials.
+Make the Publish button append the validated note to the Google Doc at `PULSE_DOC_ID` and create a Gmail draft to `PULSE_RECIPIENT` containing the note and the Doc link. Draft only. No send. All calls go through the MCP server; the agent holds no Google credentials.
+
+Publish runs only when the owner clicks **Publish**, and the button works only after every validation check has passed. Nothing publishes automatically.
+
+### MCP server
+
+Details are in the architecture's **Delivery through MCP** section. In short:
+
+| Item | Value |
+| --- | --- |
+| URL | `https://mcp-server-pulse-production.up.railway.app` (`MCP_SERVER_URL`) |
+| Code | [github.com/rajmitra1789/mcp-server-pulse](https://github.com/rajmitra1789/mcp-server-pulse) |
+| Transport | Streamable HTTP at `MCP_SERVER_URL` itself, with no path added. The server's only other routes are `GET /health`, `GET /`, `/oauth/start` and `/oauth/callback` |
+| Auth | `Authorization: Bearer <MCP_AUTH_TOKEN>` on every request |
+| Doc tool | `google_docs_append_content` with `documentId`, `content`, `ensureLeadingNewline: true` |
+| Draft tool | `gmail_create_draft` with `to` (array), `subject`, `body`, `bodyType: "text"` |
+| Never called | `gmail_send_email` |
+
+### Secrets
+
+There are now five: `GROQ_API_KEY`, `MCP_SERVER_URL`, `MCP_AUTH_TOKEN`, `PULSE_DOC_ID`, `PULSE_RECIPIENT`. `MCP_AUTH_TOKEN` is the bearer token for the MCP server, not a Google credential.
 
 ### Files created or changed
 
 | File | Contents |
 | --- | --- |
-| `src/pulse/delivery/mcp_client.py` | Remote session to `MCP_SERVER_URL` with the official `mcp` SDK |
-| `src/pulse/delivery/publish.py` | `publish(result)`: write the Doc, then create the draft, then return the link and confirmation |
-| `app.py` | Publish button calls `publish()`; shows the Doc link and draft confirmation; "Retry email" when the Doc write worked and the draft did not |
-| `scripts/run_pulse.py` | Add `--publish` |
-| `src/pulse/pipeline.py` | Write `publish.json` after a successful publish |
-| `tests/test_publish.py`, `tests/test_no_google_sdk.py` | See tasks |
+| `src/pulse/config.py` | Add `MCP_AUTH_TOKEN` to the settings read through `get_setting()` |
+| `.env.example`, `.streamlit/secrets.toml.example` | Add `MCP_AUTH_TOKEN` with a placeholder value. Five keys in total |
+| `src/pulse/delivery/mcp_client.py` | `McpClient`: streamable HTTP session to `MCP_SERVER_URL` (no path added) with the bearer header, a tool check, and `call_tool(name, args)` that returns the parsed envelope |
+| `src/pulse/delivery/publish.py` | `publish(result, client)`: append to the Doc, then create the draft. `retry_draft(result, client)`: the draft step only |
+| `src/pulse/models.py` | Add `PublishResult`: Doc link, `charactersAppended`, `draftId`, and the error code and message of a failed step |
+| `src/pulse/pipeline.py` | Write `publish.json` to the run folder after each publish or retry |
+| `app.py` | Wire the Publish button to `publish()`; show the Doc link and draft confirmation; show **Retry draft** when the append worked and the draft did not |
+| `scripts/run_pulse.py` | Add `--publish`, which only runs when every check passed |
+| `tests/test_publish.py`, `tests/test_mcp_client.py`, `tests/test_no_google_sdk.py` | See tasks |
 
 ### Check by hand when done
 
-- [ ] Click **Publish** with all checks passing. The Google Doc at `PULSE_DOC_ID` shows this week's note, word for word as in the preview.
-- [ ] A Gmail draft to `PULSE_RECIPIENT` exists with the note and a working Doc link. **No email was sent.** Check Gmail's Sent folder.
-- [ ] Clicking Publish twice for the same week does not leave the note twice in the Doc (behaviour depends on the write tool; confirm against the README).
+- [ ] With all five secrets set, `streamlit run app.py`, generate a preview, and confirm every check passes before clicking anything.
+- [ ] Break a check on purpose. The Publish button is disabled and clicking around the page contacts nothing.
+- [ ] Generating a preview, reloading the page and changing sidebar settings never publish on their own.
+- [ ] Set `PULSE_DOC_ID` to my Doc ID and `PULSE_RECIPIENT` to my address. Click **Publish** once.
+- [ ] Open the Doc. This week's note appears at the end, word for word as in the preview, and nothing above it changed.
+- [ ] Open Gmail Drafts. A draft to my address is there, with the note and a Doc link that opens the Doc.
+- [ ] Gmail's Sent folder has no new email.
+- [ ] The UI shows the Doc link and the draft confirmation, and `data/runs/<week_ending>/publish.json` holds the Doc link, `charactersAppended` and `draftId`.
+- [ ] Reload the app for the same week. The Publish button is replaced by the Doc link, so the note cannot be appended twice.
+- [ ] Set `MCP_AUTH_TOKEN` to a wrong value. Publish fails with a clear auth error, nothing is appended, and the preview still works.
 - [ ] Set `MCP_SERVER_URL` to a wrong address. Publish fails with a clear connection error and the preview still works.
-- [ ] Search `src/` for `googleapiclient` and `google.oauth2`. Nothing is found.
+- [ ] Search `src/` for `googleapiclient`, `google.oauth2` and `gmail_send_email`. Nothing is found.
 - [ ] Neither `.env.example` nor the code contains any Google OAuth client, token or account setting.
 
 ### Tasks
 
-1. Read the MCP server's GitHub README and record the tool names, arguments, responses, transport and auth in this section and in `architecture.md`. Rewrite the tasks below to match.
-2. Write `mcp_client.py`: open a session to `MCP_SERVER_URL`, list the server's tools, and fail early with a clear message if a required tool is missing.
-3. Write `publish.py`: the Doc write to `PULSE_DOC_ID`, then the draft to `PULSE_RECIPIENT`. Never call a send tool.
-4. Wire the Publish button and "Retry email" in `app.py`, and add `--publish` to `scripts/run_pulse.py`.
-5. Write `tests/test_publish.py` against a fake MCP session that records calls: the Doc write targets `PULSE_DOC_ID`, the draft goes only to `PULSE_RECIPIENT`, the Doc write comes before the draft, and no send tool is ever called.
-6. Write `tests/test_no_google_sdk.py`: fail if `googleapiclient` or `google.oauth2` is imported anywhere under `src/`.
+1. Add `MCP_AUTH_TOKEN` to `config.py`, `.env.example` and `.streamlit/secrets.toml.example`.
+2. Write `mcp_client.py`: open a streamable HTTP session to `MCP_SERVER_URL` itself, with no path added, using the official `mcp` SDK, passing `Authorization: Bearer <MCP_AUTH_TOKEN>` as a header so it goes on every request. List the tools and stop with a clear message if `google_docs_append_content` or `gmail_create_draft` is missing. `call_tool()` parses the response and turns `ok: false` into an error that carries `code` and `message`.
+3. Write `publish()` in `publish.py`. Call `google_docs_append_content` with `documentId` set to `PULSE_DOC_ID`, `content` set to the final note and `ensureLeadingNewline` set to `true`. If that fails, stop and return the error. Then call `gmail_create_draft` with `to` set to `[PULSE_RECIPIENT]`, `subject` set to the note's first line, `body` set to the note, a blank line and `https://docs.google.com/document/d/{PULSE_DOC_ID}/edit`, and `bodyType` set to `"text"`. Never call `gmail_send_email`. Refuse to run if any validation check failed.
+4. Write `retry_draft()` in `publish.py`: the draft call only, using the same arguments. It never calls the append tool.
+5. Write `publish.json` from `pipeline.py` after each publish or retry. When it records a successful append for a week, the app treats the Doc step as done for that week.
+6. Wire `app.py`. The Publish button is enabled only when every check passed and calls `publish()` only on click. After an append that worked and a draft that failed, show the Doc link, the draft error and a **Retry draft** button that calls `retry_draft()`. When `publish.json` already records an append for the week, show the Doc link instead of the Publish button.
+7. Add `--publish` to `scripts/run_pulse.py`. It publishes only when every check passed, and it is never the default.
+8. Write `tests/test_mcp_client.py`: replace the SDK's streamable HTTP connection with a stub that records its arguments, and assert the URL is exactly `MCP_SERVER_URL` with no path added and the headers hold `Authorization: Bearer <MCP_AUTH_TOKEN>`. Assert a missing required tool stops with a clear message. No network.
+9. Write `tests/test_publish.py` against a fake MCP client that records every call and returns set envelopes. Assert: the append targets `PULSE_DOC_ID` with `ensureLeadingNewline: true`; the draft goes only to `[PULSE_RECIPIENT]` with `bodyType: "text"` and contains the note and the Doc link; the append comes before the draft; a failed append means no draft call; a failed draft leaves the append result in place; `retry_draft()` makes exactly one draft call and no append call; `publish()` refuses when a check failed; `gmail_send_email` is never called. No test calls the real server or sends anything.
+10. Write `tests/test_no_google_sdk.py`: fail if `googleapiclient` or `google.oauth2` is imported anywhere under `src/`, or if the string `gmail_send_email` appears there.
 
 ---
 
@@ -412,7 +432,7 @@ Deploy `app.py` from GitHub to Streamlit Community Cloud, the same way as the Nu
 - [ ] Before the first push: `git status` does not list `.env` or `.streamlit/secrets.toml`, and `git grep -n "gsk_"` prints nothing.
 - [ ] Search every committed snapshot for `userName`, `userImage`, `reviewId` and `http`. Nothing is found.
 - [ ] The app is deployed as **private**, viewable only by listed emails. The Publish button can write to the owner's Google Doc and Gmail, so it must not be public.
-- [ ] Python 3.12 is selected in Advanced settings. Secrets hold exactly `GROQ_API_KEY`, `MCP_SERVER_URL`, `PULSE_DOC_ID` and `PULSE_RECIPIENT`.
+- [ ] Python 3.12 is selected in Advanced settings. Secrets hold exactly `GROQ_API_KEY`, `MCP_SERVER_URL`, `MCP_AUTH_TOKEN`, `PULSE_DOC_ID` and `PULSE_RECIPIENT`.
 - [ ] On the live URL: pick the committed snapshot and generate a preview. The first run is slow (embedding model download); later runs are faster.
 - [ ] The live preview matches a local preview of the same snapshot: same `k`, same theme sizes, same quotes.
 - [ ] Publish from the live app. The Doc updates and a Gmail draft appears. Nothing is sent.
@@ -423,7 +443,7 @@ Deploy `app.py` from GitHub to Streamlit Community Cloud, the same way as the Nu
 1. Rehearse in a clean Python 3.12 venv with only `requirements.txt`. Run `pytest -q` and a full preview. Fix the pins locally, not on the server.
 2. Write `README.md` and `docs/deployment-plan.md`.
 3. `git init`, confirm no secrets are staged, commit, and push to a new GitHub repo.
-4. Create the Streamlit app: repo, `main` branch, `app.py`, Python 3.12, the four secrets, private visibility.
+4. Create the Streamlit app: repo, `main` branch, `app.py`, Python 3.12, the five secrets (`GROQ_API_KEY`, `MCP_SERVER_URL`, `MCP_AUTH_TOKEN`, `PULSE_DOC_ID`, `PULSE_RECIPIENT`), private visibility.
 5. Run the live checks above. Record the results in `docs/deployment-plan.md`.
 
 ---
