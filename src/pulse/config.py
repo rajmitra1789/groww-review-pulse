@@ -38,6 +38,7 @@ RUNS_DIR = ROOT / "data" / "runs"
 SETTING_NAMES = (
     "GROQ_API_KEY",
     "MCP_SERVER_URL",
+    "MCP_AUTH_TOKEN",
     "PULSE_DOC_ID",
     "PULSE_RECIPIENT",
 )

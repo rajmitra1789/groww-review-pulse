@@ -270,6 +270,48 @@ class PulseResult:
         return not self.failures and not self.stop_reason
 
 
+@dataclass(frozen=True)
+class PublishResult:
+    doc_link: str
+    doc_appended: bool = False
+    characters_appended: int | None = None
+    draft_id: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    failed_step: str | None = None
+
+    @property
+    def passed(self) -> bool:
+        return self.doc_appended and self.draft_id is not None and self.error_code is None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "docLink": self.doc_link,
+            "docAppended": self.doc_appended,
+            "charactersAppended": self.characters_appended,
+            "draftId": self.draft_id,
+            "failedStep": self.failed_step,
+            "errorCode": self.error_code,
+            "errorMessage": self.error_message,
+        }
+
+    @classmethod
+    def from_dict(cls, row: dict[str, object]) -> PublishResult:
+        return cls(
+            doc_link=str(row.get("docLink") or ""),
+            doc_appended=bool(row.get("docAppended")),
+            characters_appended=(
+                int(row["charactersAppended"])
+                if row.get("charactersAppended") is not None
+                else None
+            ),
+            draft_id=str(row["draftId"]) if row.get("draftId") else None,
+            failed_step=str(row["failedStep"]) if row.get("failedStep") else None,
+            error_code=str(row["errorCode"]) if row.get("errorCode") else None,
+            error_message=str(row["errorMessage"]) if row.get("errorMessage") else None,
+        )
+
+
 def _hash_review_id(review_id: str) -> str:
     return hashlib.sha256(review_id.encode("utf-8")).hexdigest()[:12]
 

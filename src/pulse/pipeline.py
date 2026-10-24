@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -16,7 +16,15 @@ from pulse.config import (
     WINDOW_WEEKS,
 )
 from pulse.filters import Funnel, apply_filters, last_full_sunday, window_bounds, word_count
-from pulse.models import Cluster, ComposeResult, Failure, PulseResult, Review, Theme
+from pulse.models import (
+    Cluster,
+    ComposeResult,
+    Failure,
+    PublishResult,
+    PulseResult,
+    Review,
+    Theme,
+)
 from pulse.note import (
     allowed_numbers,
     assemble,
@@ -323,6 +331,43 @@ def _write_artifacts(result: PulseResult) -> None:
             "checks": [item.to_dict() for item in result.checks],
         },
     )
+
+
+def load_publish_result(run_dir: Path) -> PublishResult | None:
+    path = Path(run_dir) / "publish.json"
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return PublishResult.from_dict(payload)
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+
+def record_publish_result(
+    pulse: PulseResult, delivery: PublishResult
+) -> PublishResult:
+    """Persist the latest delivery state without losing a prior Doc append."""
+    previous = load_publish_result(pulse.run_dir)
+    merged = PublishResult(
+        doc_link=delivery.doc_link or (previous.doc_link if previous else ""),
+        doc_appended=delivery.doc_appended or bool(previous and previous.doc_appended),
+        characters_appended=(
+            delivery.characters_appended
+            if delivery.characters_appended is not None
+            else previous.characters_appended if previous else None
+        ),
+        draft_id=delivery.draft_id,
+        error_code=delivery.error_code,
+        error_message=delivery.error_message,
+        failed_step=delivery.failed_step,
+    )
+    payload = merged.to_dict()
+    payload["weekEnding"] = pulse.week_ending.isoformat()
+    payload["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    _write_json(pulse.run_dir / "publish.json", payload)
+    _zip_run(pulse.run_dir)
+    return merged
 
 
 def _write_themes(

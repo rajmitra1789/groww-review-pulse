@@ -1,4 +1,4 @@
-"""Streamlit preview for the weekly review pulse. Publish is not connected yet."""
+"""Streamlit preview and owner-triggered MCP publishing."""
 
 from __future__ import annotations
 
@@ -13,8 +13,15 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from pulse.config import SNAPSHOTS_DIR, WINDOW_WEEKS  # noqa: E402
+from pulse.delivery.mcp_client import McpClient, McpError  # noqa: E402
+from pulse.delivery.publish import publish, retry_draft  # noqa: E402
 from pulse.filters import last_full_sunday  # noqa: E402
-from pulse.pipeline import run_pulse  # noqa: E402
+from pulse.models import PublishResult  # noqa: E402
+from pulse.pipeline import (  # noqa: E402
+    load_publish_result,
+    record_publish_result,
+    run_pulse,
+)
 from pulse.snapshot import SnapshotError  # noqa: E402
 
 st.set_page_config(page_title="Groww Review Pulse", layout="wide")
@@ -35,7 +42,7 @@ def _run_preview(snapshot: Path, week_ending: date, window_weeks: int):
 
 def main() -> None:
     st.title("Groww Review Pulse")
-    st.caption("Preview a one-page weekly note. Publishing is not connected yet.")
+    st.caption("Preview a one-page weekly note, then publish it when all checks pass.")
 
     snapshots = _snapshot_choices()
     names = [path.name for path in snapshots]
@@ -71,7 +78,7 @@ def main() -> None:
     result = st.session_state.get("pulse")
     if result is None:
         st.info("Pick a snapshot and click Generate preview.")
-        st.button("Publish", disabled=True, help="Publishing is not connected yet.")
+        st.button("Publish", disabled=True, help="Generate a passing preview first.")
         return
 
     if result.stop_reason:
@@ -136,11 +143,60 @@ def main() -> None:
             mime="application/zip",
         )
 
-    st.button(
+    _delivery_controls(result)
+
+
+def _delivery_controls(result) -> None:
+    delivery = load_publish_result(result.run_dir)
+    if delivery and delivery.doc_appended:
+        st.success("The note was appended to the Google Doc.")
+        st.link_button("Open Google Doc", delivery.doc_link)
+        if delivery.draft_id:
+            st.success("Gmail draft created.")
+            return
+        if delivery.error_code:
+            st.error(f"{delivery.error_code}: {delivery.error_message}")
+        if st.button("Retry draft", disabled=not result.passed):
+            delivery = _run_delivery(result, draft_only=True)
+            _show_delivery_result(delivery)
+        return
+
+    if delivery and delivery.error_code:
+        st.error(f"{delivery.error_code}: {delivery.error_message}")
+    if st.button(
         "Publish",
-        disabled=True,
-        help="Publishing is not connected yet.",
-    )
+        type="primary",
+        disabled=not result.passed,
+        help=None if result.passed else "Every validation check must pass.",
+    ):
+        delivery = _run_delivery(result, draft_only=False)
+        _show_delivery_result(delivery)
+
+
+def _run_delivery(result, *, draft_only: bool) -> PublishResult:
+    try:
+        client = McpClient()
+        delivery = (
+            retry_draft(result, client) if draft_only else publish(result, client)
+        )
+    except McpError as exc:
+        delivery = PublishResult(
+            doc_link="",
+            error_code=exc.code,
+            error_message=exc.message,
+            failed_step="configuration",
+        )
+    return record_publish_result(result, delivery)
+
+
+def _show_delivery_result(delivery: PublishResult) -> None:
+    if delivery.doc_appended and delivery.doc_link:
+        st.success("The note was appended to the Google Doc.")
+        st.link_button("Open Google Doc", delivery.doc_link)
+    if delivery.draft_id:
+        st.success("Gmail draft created.")
+    elif delivery.error_code:
+        st.error(f"{delivery.error_code}: {delivery.error_message}")
 
 
 if __name__ == "__main__":
