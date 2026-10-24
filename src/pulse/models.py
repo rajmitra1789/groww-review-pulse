@@ -127,6 +127,86 @@ class Cluster:
         }
 
 
+@dataclass(frozen=True)
+class Theme:
+    cluster_id: int
+    name: str
+    summary: str
+    size: int
+    share_of_clusterable: float
+    share_of_kept: float
+    complaint_share: float
+    representative_ids: tuple[str, ...]
+    member_ids: tuple[str, ...]
+    centroid: tuple[float, ...]
+    average_rating: float
+    one_two_star_share: float
+    top_topic_words: tuple[str, ...] = ()
+
+    @classmethod
+    def from_cluster(cls, cluster: Cluster, name: str, summary: str) -> Theme:
+        return cls(
+            cluster_id=cluster.id,
+            name=name,
+            summary=summary,
+            size=cluster.size,
+            share_of_clusterable=cluster.share_of_clusterable,
+            share_of_kept=cluster.share_of_kept,
+            complaint_share=cluster.complaint_share,
+            representative_ids=cluster.representative_ids,
+            member_ids=cluster.member_ids,
+            centroid=cluster.centroid,
+            average_rating=cluster.average_rating,
+            one_two_star_share=cluster.one_two_star_share,
+            top_topic_words=cluster.top_topic_words,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "cluster_id": self.cluster_id,
+            "name": self.name,
+            "summary": self.summary,
+            "size": self.size,
+            "share_of_clusterable": self.share_of_clusterable,
+            "share_of_kept": self.share_of_kept,
+            "complaint_share": self.complaint_share,
+            "representative_ids": list(self.representative_ids),
+            "member_ids": list(self.member_ids),
+            "centroid": [float(value) for value in self.centroid],
+            "average_rating": self.average_rating,
+            "one_two_star_share": self.one_two_star_share,
+            "top_topic_words": list(self.top_topic_words),
+        }
+
+
+@dataclass(frozen=True)
+class ThemeLine:
+    rank: int
+    line: str
+
+
+@dataclass(frozen=True)
+class Action:
+    theme_rank: int
+    text: str
+
+
+@dataclass(frozen=True)
+class ComposeResult:
+    themes: tuple[ThemeLine, ...]
+    quote_ids: tuple[str, ...]
+    actions: tuple[Action, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "themes": [{"rank": item.rank, "line": item.line} for item in self.themes],
+            "quote_ids": list(self.quote_ids),
+            "actions": [
+                {"theme_rank": item.theme_rank, "text": item.text} for item in self.actions
+            ],
+        }
+
+
 def _hash_review_id(review_id: str) -> str:
     return hashlib.sha256(review_id.encode("utf-8")).hexdigest()[:12]
 
