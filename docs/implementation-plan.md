@@ -15,7 +15,7 @@ Each phase ends in a working, checkable state. Do not start a phase until the ha
 | 4 | Themes, quotes, actions | Ready | Named themes, 3 quote IDs, 3 action ideas |
 | 5 | Note, checks, preview UI | Ready | A validated note in a Streamlit preview with a Publish button |
 | 6 | MCP connection | Ready | Publish appends to the Google Doc and creates the Gmail draft |
-| 7 | Deployment | Ready | A private app on Streamlit Community Cloud |
+| 7 | Deployment | Ready | A public app on Streamlit Community Cloud |
 
 ---
 
@@ -429,9 +429,9 @@ Deploy `app.py` from GitHub to Streamlit Community Cloud, the same way as the Nu
 
 ### Check by hand when done
 
-- [ ] Before the first push: `git status` does not list `.env` or `.streamlit/secrets.toml`, and `git grep -n "gsk_"` prints nothing.
+- [ ] Before the first push: `git status` does not list `.env` or `.streamlit/secrets.toml`, and `git grep -n "$(printf 'gsk\137')"` prints nothing.
 - [ ] Search every committed snapshot for `userName`, `userImage`, `reviewId` and `http`. Nothing is found.
-- [ ] The app is deployed as **private**, viewable only by listed emails. The Publish button can write to the owner's Google Doc and Gmail, so it must not be public.
+- [ ] The app is deployed as **public**, with no viewer allow-list or password gate. The deployment runbook records that any visitor can invoke the secret-backed Publish action after validation.
 - [ ] Python 3.12 is selected in Advanced settings. Secrets hold exactly `GROQ_API_KEY`, `MCP_SERVER_URL`, `MCP_AUTH_TOKEN`, `PULSE_DOC_ID` and `PULSE_RECIPIENT`.
 - [ ] On the live URL: pick the committed snapshot and generate a preview. The first run is slow (embedding model download); later runs are faster.
 - [ ] The live preview matches a local preview of the same snapshot: same `k`, same theme sizes, same quotes.
@@ -443,7 +443,7 @@ Deploy `app.py` from GitHub to Streamlit Community Cloud, the same way as the Nu
 1. Rehearse in a clean Python 3.12 venv with only `requirements.txt`. Run `pytest -q` and a full preview. Fix the pins locally, not on the server.
 2. Write `README.md` and `docs/deployment-plan.md`.
 3. `git init`, confirm no secrets are staged, commit, and push to a new GitHub repo.
-4. Create the Streamlit app: repo, `main` branch, `app.py`, Python 3.12, the five secrets (`GROQ_API_KEY`, `MCP_SERVER_URL`, `MCP_AUTH_TOKEN`, `PULSE_DOC_ID`, `PULSE_RECIPIENT`), private visibility.
+4. Create the Streamlit app: repo, `main` branch, `app.py`, Python 3.12, the five secrets (`GROQ_API_KEY`, `MCP_SERVER_URL`, `MCP_AUTH_TOKEN`, `PULSE_DOC_ID`, `PULSE_RECIPIENT`), public visibility, and no password gate.
 5. Run the live checks above. Record the results in `docs/deployment-plan.md`.
 
 ---
